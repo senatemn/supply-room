@@ -67,16 +67,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
 #sync-status{font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);padding:6px 12px;border-radius:999px}
 #sync-dot{width:8px;height:8px;border-radius:50%;background:var(--text-muted);display:inline-block;flex-shrink:0}
 
-/* Login screen background
-   ---------------------------------------------------------------
-   Default is a CSS-only gradient + dot pattern in the brand color,
-   so the page never depends on an external image file or network
-   request. To use a real photo instead, replace the `background`
-   declaration on #login-screen below with, e.g.:
-     background: url('assets/login-bg.jpg') center/cover no-repeat;
-   and host that image file alongside this HTML file (same GitHub
-   repo works fine — just reference it by relative path).
-   --------------------------------------------------------------- */
+/* Login screen background  */
 #login-screen{
   background:
     radial-gradient(circle at 18% 22%, rgba(255,255,255,0.10), transparent 42%),

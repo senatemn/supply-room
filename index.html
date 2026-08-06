@@ -583,7 +583,7 @@ import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, orderBy, limit, serverTimestamp, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 const app = {
   db: null,
@@ -617,17 +617,14 @@ const app = {
       this.db = getFirestore(fbApp);
       this.auth = getAuth(fbApp);
 
-      // Automatically handle login state changes (persists login on refresh)
+      // Debug: log which project we're actually talking to
+      console.log("Firebase initialized:", FIREBASE_CONFIG.projectId, "API key:", FIREBASE_CONFIG.apiKey);
+
       onAuthStateChanged(this.auth, async (user) => {
         if (user) {
-          // User is signed in
           document.getElementById("login-screen").classList.add("hidden");
           await this.enterApp();
         } else {
-          // User is signed out (either a fresh page load, or an explicit
-          // logout). Make sure no Firestore listeners are still running
-          // and clear out cached data so nothing from the last session
-          // lingers on a shared computer.
           this.teardownListeners();
           this.catalog = [];
           this.checkoutHistory = [];
@@ -645,7 +642,7 @@ const app = {
 
     } catch (err) {
       console.error("Firebase Init Error:", err);
-      alert("Failed to initialize Firebase. Check your config object.");
+      alert("Failed to initialize Firebase. Check your config object.\n\nProject ID: " + FIREBASE_CONFIG.projectId);
     }
   },
 
@@ -662,16 +659,26 @@ const app = {
 
     try {
       await signInWithEmailAndPassword(this.auth, email, password);
-      // If successful, onAuthStateChanged will automatically trigger and call enterApp()
+      // onAuthStateChanged handles the rest
     } catch (err) {
-      console.error(err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-        errorDiv.textContent = "Invalid email or password.";
+      console.error("Login error code:", err.code, "message:", err.message);
+      
+      let friendly = err.message;
+      if (err.code === 'auth/invalid-credential') {
+        friendly = "Invalid email or password. If you're sure the password is correct, check that this page is using the right Firebase project (look in the browser console).";
+      } else if (err.code === 'auth/user-not-found') {
+        friendly = "No account found with this email. Create the user first in Firebase Console → Authentication → Users.";
+      } else if (err.code === 'auth/wrong-password') {
+        friendly = "Incorrect password.";
       } else if (err.code === 'auth/too-many-requests') {
-        errorDiv.textContent = "Too many failed attempts. Please try again later.";
-      } else {
-        errorDiv.textContent = `Login failed: ${err.message}`;
+        friendly = "Too many failed attempts. Please try again later.";
+      } else if (err.code === 'auth/invalid-api-key') {
+        friendly = "The Firebase API key in this file does not match any project. Check your FIREBASE_CONFIG.";
+      } else if (err.code === 'auth/unauthorized-domain') {
+        friendly = "This domain (senatemn.github.io) is not authorized. Add it in Firebase Console → Authentication → Settings → Authorized domains.";
       }
+      
+      errorDiv.textContent = friendly;
       document.getElementById("password-input").value = '';
     }
   },

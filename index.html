@@ -1720,7 +1720,7 @@ const app = {
     }
   },
 
-  updateDepartmentDropdowns() {
+      updateDepartmentDropdowns() {
     const deptMap = new Map();
     this.checkoutHistory.forEach(h => {
       const d = (h.department || '').trim();
@@ -1735,13 +1735,15 @@ const app = {
     const historySelect = document.getElementById("history-department-select");
     const currentVal = historySelect.value;
     historySelect.innerHTML = `<option value="">— Select Department —</option>` + departments.map(d => `<option value="${d}" ${d === currentVal ? 'selected' : ''}>${d}</option>`).join('');
+    if (currentVal) historySelect.value = currentVal; // FIX
 
     const invoiceSelect = document.getElementById("invoice-department-select");
     const invoiceCurrentVal = invoiceSelect.value;
     invoiceSelect.innerHTML = `<option value="">— All Departments —</option>` + departments.map(d => `<option value="${d}" ${d === invoiceCurrentVal ? 'selected' : ''}>${d}</option>`).join('');
+    if (invoiceCurrentVal) invoiceSelect.value = invoiceCurrentVal; // FIX
   },
 
-  updateItemDropdowns() {
+   updateItemDropdowns() {
     const select = document.getElementById("history-item-select");
     const currentVal = select.value;
     const sortedCatalog = [...this.catalog].sort((a, b) => a.name.localeCompare(b.name));
@@ -1749,6 +1751,8 @@ const app = {
     select.innerHTML = `<option value="">— Select Item —</option>` + sortedCatalog.map(item => `
       <option value="${item.name}" ${item.name === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
     `).join('');
+    
+    if (currentVal) select.value = currentVal;
   },
 
   getFilteredDepartmentHistory() {
@@ -1867,7 +1871,7 @@ const app = {
     this.showInvoiceScreen();
   },
 
-  getFilteredItemHistory() {
+    getFilteredItemHistory() {
     const selectedItemName = document.getElementById("history-item-select").value;
     const startDate = document.getElementById("item-history-start-date").value;
     const endDate = document.getElementById("item-history-end-date").value;
@@ -1878,11 +1882,13 @@ const app = {
 
     this.checkoutHistory.forEach(rec => {
       if (rec.voided) return;
-      if (startDate && rec.date < startDate) return;
-      if (endDate && rec.date > endDate) return;
+      if (!rec.items) return; // FIX: Safety check for malformed/old invoices
+      if (startDate && rec.date && rec.date < startDate) return;
+      if (endDate && rec.date && rec.date > endDate) return;
 
       rec.items.forEach(item => {
-        if (item.name.toLowerCase() === selectedItemName.toLowerCase()) {
+        // FIX: Ensure item.name exists before calling toLowerCase()
+        if (item.name && item.name.toLowerCase() === selectedItemName.toLowerCase()) {
           matchedTransactions.push({
             date: rec.date,
             invoiceNum: rec.invoiceNum,
@@ -1899,7 +1905,7 @@ const app = {
     return { itemName: selectedItemName, matchedTransactions };
   },
 
-  renderItemHistory() {
+    renderItemHistory() {
     const { itemName: selectedItemName, matchedTransactions } = this.getFilteredItemHistory();
     const monthlyTableBody = document.getElementById("item-monthly-table");
     const summaryDiv = document.getElementById("item-history-summary");
@@ -1921,7 +1927,10 @@ const app = {
 
     matchedTransactions.forEach(tx => {
       totalQuantitySent += tx.qty;
-      const monthKey = tx.date.substring(0, 7);
+      // FIX: Gracefully handle missing or malformed dates so the loop doesn't crash
+      const dateStr = tx.date || '';
+      const monthKey = dateStr.length >= 7 ? dateStr.substring(0, 7) : 'Unknown';
+      
       if (!monthlyAggregates[monthKey]) {
         monthlyAggregates[monthKey] = {
           month: monthKey,
@@ -1936,14 +1945,18 @@ const app = {
 
     const sortedMonthly = Object.values(monthlyAggregates).sort((a, b) => b.month.localeCompare(a.month));
     monthlyTableBody.innerHTML = sortedMonthly.map(m => {
-      const [year, monthNum] = m.month.split('-');
-      const dateObj = new Date(year, monthNum - 1, 1);
-      const monthFormatted = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+      let monthFormatted = m.month;
+      // FIX: Only parse the date if it's a valid YYYY-MM string
+      if (m.month !== 'Unknown' && m.month.includes('-')) {
+        const [year, monthNum] = m.month.split('-');
+        const dateObj = new Date(parseInt(year), parseInt(monthNum) - 1, 1);
+        monthFormatted = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+      }
       return `
         <tr>
           <td><strong>${monthFormatted}</strong></td>
           <td>${selectedItemName}</td>
-          <td>${m.category}</td>
+          <td>${m.category || '—'}</td>
           <td style="font-weight:700;">${m.qty}</td>
         </tr>
       `;

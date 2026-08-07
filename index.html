@@ -732,6 +732,29 @@ const app = {
     }
   },
 
+  resetViewState() {
+    // This is a single-page app — logging out just hides the app
+    // container, it doesn't reload the page. So every filter dropdown,
+    // date range, search box, and the invoice list's page number are
+    // all still sitting there in the DOM from before. Called whenever
+    // someone enters the app (including logging back in after an idle
+    // timeout) so it always looks like a fresh visit to the main page
+    // instead of resuming wherever the last session left off.
+    this.invoicePage = 0;
+
+    [
+      "invoice-department-select", "invoice-start-date", "invoice-end-date",
+      "history-department-select", "history-department-start-date", "history-department-end-date",
+      "history-item-select", "item-history-start-date", "item-history-end-date",
+      "search-box", "inventory-search-box"
+    ].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+
+    window.scrollTo(0, 0);
+  },
+
   autoLogout() {
     if (!this.auth || !this.auth.currentUser) return;
     // Same cleanup as a manual logout, but no confirm() prompt — the
@@ -745,6 +768,7 @@ const app = {
 
   async enterApp() {
     document.getElementById("app-container").classList.remove("hidden");
+    this.resetViewState();
 
     // Defensive: make sure we never end up with two sets of listeners
     // stacked on top of each other (e.g. if enterApp were ever triggered

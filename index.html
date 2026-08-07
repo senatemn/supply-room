@@ -602,6 +602,10 @@ const app = {
   unsubCatalog: null,
   unsubInvoices: null,
 
+  // Auto-logout after 10 minutes of no mouse/keyboard/touch activity.
+  INACTIVITY_LIMIT_MS: 10 * 60 * 1000,
+  inactivityTimer: null,
+
   getLocalISODate() {
     const d = new Date();
     const year = d.getFullYear();
@@ -624,8 +628,10 @@ const app = {
         if (user) {
           document.getElementById("login-screen").classList.add("hidden");
           await this.enterApp();
+          this.resetInactivityTimer();
         } else {
           this.teardownListeners();
+          this.clearInactivityTimer();
           this.catalog = [];
           this.checkoutHistory = [];
           this.cart = {};
@@ -638,6 +644,14 @@ const app = {
           document.getElementById("login-error").textContent = '';
           document.getElementById("email-input").focus();
         }
+      });
+
+      // Any real user activity resets the idle clock. The timer itself
+      // only actually fires a logout while someone is signed in (see
+      // resetInactivityTimer), so this listener is harmless to leave
+      // attached at the login screen too.
+      ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
+        document.addEventListener(evt, () => this.resetInactivityTimer(), { passive: true });
       });
 
     } catch (err) {
@@ -690,6 +704,7 @@ const app = {
     // security rules reject the read, and that shows up as a scary
     // "Lost connection to the database" alert right as you log out.
     this.teardownListeners();
+    this.clearInactivityTimer();
     // Wipe the in-progress cart and form fields immediately so the next
     // person who logs in on this computer never sees the previous
     // session's selections.
@@ -700,6 +715,32 @@ const app = {
   teardownListeners() {
     if (this.unsubCatalog) { this.unsubCatalog(); this.unsubCatalog = null; }
     if (this.unsubInvoices) { this.unsubInvoices(); this.unsubInvoices = null; }
+  },
+
+  resetInactivityTimer() {
+    // Only meaningful while someone is actually signed in — activity on
+    // the login screen itself shouldn't schedule a logout.
+    if (!this.auth || !this.auth.currentUser) return;
+    this.clearInactivityTimer();
+    this.inactivityTimer = setTimeout(() => this.autoLogout(), this.INACTIVITY_LIMIT_MS);
+  },
+
+  clearInactivityTimer() {
+    if (this.inactivityTimer) {
+      clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = null;
+    }
+  },
+
+  autoLogout() {
+    if (!this.auth || !this.auth.currentUser) return;
+    // Same cleanup as a manual logout, but no confirm() prompt — the
+    // whole point is that nobody is at the keyboard to answer it.
+    this.teardownListeners();
+    this.clearInactivityTimer();
+    this.resetForm();
+    signOut(this.auth).catch(err => console.error("Auto-logout error:", err));
+    alert("You've been logged out after 10 minutes of inactivity.");
   },
 
   async enterApp() {
@@ -782,6 +823,7 @@ const app = {
       this.invoicesSynced = true;
       this.updateSyncStatus();
       this.updateDepartmentDropdowns();
+      this.updateItemDropdowns();
       this.renderInvoiceList();
       this.renderDepartmentHistory();
       this.renderItemHistory();
@@ -1741,13 +1783,39 @@ const app = {
     invoiceSelect.innerHTML = `<option value="">— All Departments —</option>` + departments.map(d => `<option value="${d}" ${d === invoiceCurrentVal ? 'selected' : ''}>${d}</option>`).join('');
   },
 
+  getAllKnownItems() {
+    // Union of every item name currently in the catalog AND every item
+    // name that appears anywhere in invoice history. The catalog only
+    // reflects what's active *right now* — if an item is ever deleted,
+    // renamed, or just hasn't synced down yet, it would otherwise vanish
+    // from this list even though real checkout records for it still
+    // exist. That's what was making items disappear from the Monthly
+    // Aggregated Item Volume report.
+    const itemMap = new Map(); // key: lowercased name -> { name, category }
+
+    this.catalog.forEach(item => {
+      itemMap.set(item.name.toLowerCase(), { name: item.name, category: item.category });
+    });
+
+    this.checkoutHistory.forEach(rec => {
+      (rec.items || []).forEach(i => {
+        const key = i.name.toLowerCase();
+        if (!itemMap.has(key)) {
+          itemMap.set(key, { name: i.name, category: i.category });
+        }
+      });
+    });
+
+    return Array.from(itemMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  },
+
   updateItemDropdowns() {
     const select = document.getElementById("history-item-select");
     const currentVal = select.value;
-    const sortedCatalog = [...this.catalog].sort((a, b) => a.name.localeCompare(b.name));
+    const allItems = this.getAllKnownItems();
 
-    select.innerHTML = `<option value="">— Select Item —</option>` + sortedCatalog.map(item => `
-      <option value="${item.name}" ${item.name === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
+    select.innerHTML = `<option value="">— Select Item —</option>` + allItems.map(item => `
+      <option value="${item.name}" ${item.name.toLowerCase() === currentVal.toLowerCase() ? 'selected' : ''}>${item.name} (${item.category})</option>
     `).join('');
   },
 

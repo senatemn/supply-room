@@ -1659,7 +1659,7 @@ const app = {
              throw new Error(`Not enough stock for "${itemName}". Available: ${currentStock}, trying to deduct ${-stockDeltas[cid]} (net).`);
           }
 
-          catalogUpdates.push({ ref, newStock });
+          catalogUpdates.push({ ref: catalogRefs[i], newStock });
         }
 
         catalogUpdates.forEach(u => {
@@ -1784,24 +1784,30 @@ const app = {
   },
 
   getAllKnownItems() {
-    // Union of every item name currently in the catalog AND every item
-    // name that appears anywhere in invoice history. The catalog only
-    // reflects what's active *right now* — if an item is ever deleted,
-    // renamed, or just hasn't synced down yet, it would otherwise vanish
-    // from this list even though real checkout records for it still
-    // exist. That's what was making items disappear from the Monthly
-    // Aggregated Item Volume report.
-    const itemMap = new Map(); // key: lowercased name -> { name, category }
+    // Union of every item currently in the catalog AND every item that
+    // appears anywhere in invoice history, keyed by the catalog item's
+    // ID — not its name. Checkout records already carry the item's id,
+    // so id is the only reliable join key: matching by name breaks the
+    // moment someone renames an item after it's been checked out (the
+    // dropdown would show the new name, but old invoices still carry
+    // the old one, so nothing would match). This is also what makes an
+    // item disappear from the list entirely if it's later deleted from
+    // the catalog — the id survives in history even though the name
+    // conflict does not.
+    const itemMap = new Map(); // key: item id -> { id, name, category }
 
     this.catalog.forEach(item => {
-      itemMap.set(item.name.toLowerCase(), { name: item.name, category: item.category });
+      itemMap.set(item.id, { id: item.id, name: item.name, category: item.category });
     });
 
+    // checkoutHistory is ordered most-recent-first (see listenToInvoices),
+    // so the first time we encounter a given id here is its most recently
+    // recorded name — a reasonable label to fall back to for an item
+    // that's since been deleted from the catalog.
     this.checkoutHistory.forEach(rec => {
       (rec.items || []).forEach(i => {
-        const key = i.name.toLowerCase();
-        if (!itemMap.has(key)) {
-          itemMap.set(key, { name: i.name, category: i.category });
+        if (!itemMap.has(i.id)) {
+          itemMap.set(i.id, { id: i.id, name: i.name, category: i.category });
         }
       });
     });
@@ -1815,7 +1821,7 @@ const app = {
     const allItems = this.getAllKnownItems();
 
     select.innerHTML = `<option value="">— Select Item —</option>` + allItems.map(item => `
-      <option value="${item.name}" ${item.name.toLowerCase() === currentVal.toLowerCase() ? 'selected' : ''}>${item.name} (${item.category})</option>
+      <option value="${item.id}" ${item.id === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
     `).join('');
   },
 
@@ -1936,11 +1942,17 @@ const app = {
   },
 
   getFilteredItemHistory() {
-    const selectedItemName = document.getElementById("history-item-select").value;
+    const selectedItemId = document.getElementById("history-item-select").value;
     const startDate = document.getElementById("item-history-start-date").value;
     const endDate = document.getElementById("item-history-end-date").value;
 
-    if (!selectedItemName) return { itemName: '', matchedTransactions: [] };
+    if (!selectedItemId) return { itemId: '', displayName: '', matchedTransactions: [] };
+
+    // Used only for report headings — every row below still shows the
+    // exact name recorded on that specific invoice at the time, so the
+    // history stays accurate even across renames.
+    const knownItem = this.getAllKnownItems().find(i => i.id === selectedItemId);
+    const displayName = knownItem ? knownItem.name : 'Unknown Item';
 
     let matchedTransactions = [];
 
@@ -1949,8 +1961,8 @@ const app = {
       if (startDate && rec.date < startDate) return;
       if (endDate && rec.date > endDate) return;
 
-      rec.items.forEach(item => {
-        if (item.name.toLowerCase() === selectedItemName.toLowerCase()) {
+      (rec.items || []).forEach(item => {
+        if (item.id === selectedItemId) {
           matchedTransactions.push({
             date: rec.date,
             invoiceNum: rec.invoiceNum,
@@ -1964,22 +1976,22 @@ const app = {
       });
     });
 
-    return { itemName: selectedItemName, matchedTransactions };
+    return { itemId: selectedItemId, displayName, matchedTransactions };
   },
 
   renderItemHistory() {
-    const { itemName: selectedItemName, matchedTransactions } = this.getFilteredItemHistory();
+    const { itemId: selectedItemId, displayName, matchedTransactions } = this.getFilteredItemHistory();
     const monthlyTableBody = document.getElementById("item-monthly-table");
     const summaryDiv = document.getElementById("item-history-summary");
 
-    if (!selectedItemName) {
+    if (!selectedItemId) {
       summaryDiv.textContent = "Select an item and optional date range above to view its total distribution over time.";
       monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No item selected</td></tr>`;
       return;
     }
 
     if (matchedTransactions.length === 0) {
-      summaryDiv.innerHTML = `No checkout records found for <strong>${selectedItemName}</strong> in the specified date range.`;
+      summaryDiv.innerHTML = `No checkout records found for <strong>${displayName}</strong> in the specified date range.`;
       monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No monthly records for this period</td></tr>`;
       return;
     }
@@ -1994,13 +2006,14 @@ const app = {
         monthlyAggregates[monthKey] = {
           month: monthKey,
           category: tx.category,
+          name: tx.name,
           qty: 0
         };
       }
       monthlyAggregates[monthKey].qty += tx.qty;
     });
 
-    summaryDiv.innerHTML = `Total quantity sent out for <strong>${selectedItemName}</strong>: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
+    summaryDiv.innerHTML = `Total quantity sent out for <strong>${displayName}</strong>: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
 
     const sortedMonthly = Object.values(monthlyAggregates).sort((a, b) => b.month.localeCompare(a.month));
     monthlyTableBody.innerHTML = sortedMonthly.map(m => {
@@ -2010,7 +2023,7 @@ const app = {
       return `
         <tr>
           <td><strong>${monthFormatted}</strong></td>
-          <td>${selectedItemName}</td>
+          <td>${m.name}</td>
           <td>${m.category}</td>
           <td style="font-weight:700;">${m.qty}</td>
         </tr>
@@ -2019,8 +2032,8 @@ const app = {
   },
 
   printItemHistory() {
-    const { itemName: selectedItemName, matchedTransactions } = this.getFilteredItemHistory();
-    if (!selectedItemName || matchedTransactions.length === 0) {
+    const { itemId: selectedItemId, displayName, matchedTransactions } = this.getFilteredItemHistory();
+    if (!selectedItemId || matchedTransactions.length === 0) {
       alert("Please select a valid item and ensure there are records to print within the chosen date range.");
       return;
     }
@@ -2042,7 +2055,7 @@ const app = {
     this.setInvoiceDocTitle("ITEM DISTRIBUTION REPORT", "Item Issue History");
     document.getElementById("inv-reprint-tag").classList.add("hidden");
     document.getElementById("inv-meta-text").innerHTML = `<strong>Report Type:</strong> Item Distribution Log<br><strong>Range:</strong> ${startDate} to ${endDate}`;
-    document.getElementById("inv-department").textContent = `Item: ${selectedItemName}`;
+    document.getElementById("inv-department").textContent = `Item: ${displayName}`;
     document.getElementById("inv-subline").textContent = `Total Units Sent Out: ${totalQuantitySent}`;
 
     const tbody = document.getElementById("inv-table-body");

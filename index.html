@@ -1720,7 +1720,7 @@ const app = {
     }
   },
 
-      updateDepartmentDropdowns() {
+  updateDepartmentDropdowns() {
     const deptMap = new Map();
     this.checkoutHistory.forEach(h => {
       const d = (h.department || '').trim();
@@ -1735,25 +1735,21 @@ const app = {
     const historySelect = document.getElementById("history-department-select");
     const currentVal = historySelect.value;
     historySelect.innerHTML = `<option value="">— Select Department —</option>` + departments.map(d => `<option value="${d}" ${d === currentVal ? 'selected' : ''}>${d}</option>`).join('');
-    if (currentVal) historySelect.value = currentVal; // FIX
 
     const invoiceSelect = document.getElementById("invoice-department-select");
     const invoiceCurrentVal = invoiceSelect.value;
     invoiceSelect.innerHTML = `<option value="">— All Departments —</option>` + departments.map(d => `<option value="${d}" ${d === invoiceCurrentVal ? 'selected' : ''}>${d}</option>`).join('');
-    if (invoiceCurrentVal) invoiceSelect.value = invoiceCurrentVal; // FIX
   },
 
-      updateItemDropdowns() {
-     const select = document.getElementById("history-item-select");
-     const currentVal = select.value;
-     const sortedCatalog = [...this.catalog].sort((a, b) => a.name.localeCompare(b.name));
-   
-     select.innerHTML = `<option value="">— Select Item —</option>` + sortedCatalog.map(item => `
-       <option value="${item.name}" ${item.name === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
-     `).join('');
-     
-     if (currentVal) select.value = currentVal;
-   }
+  updateItemDropdowns() {
+    const select = document.getElementById("history-item-select");
+    const currentVal = select.value;
+    const sortedCatalog = [...this.catalog].sort((a, b) => a.name.localeCompare(b.name));
+
+    select.innerHTML = `<option value="">— Select Item —</option>` + sortedCatalog.map(item => `
+      <option value="${item.name}" ${item.name === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
+    `).join('');
+  },
 
   getFilteredDepartmentHistory() {
     const selectedDept = document.getElementById("history-department-select").value;
@@ -1871,7 +1867,7 @@ const app = {
     this.showInvoiceScreen();
   },
 
-    getFilteredItemHistory() {
+  getFilteredItemHistory() {
     const selectedItemName = document.getElementById("history-item-select").value;
     const startDate = document.getElementById("item-history-start-date").value;
     const endDate = document.getElementById("item-history-end-date").value;
@@ -1882,13 +1878,11 @@ const app = {
 
     this.checkoutHistory.forEach(rec => {
       if (rec.voided) return;
-      if (!rec.items) return; // FIX: Safety check for malformed/old invoices
-      if (startDate && rec.date && rec.date < startDate) return;
-      if (endDate && rec.date && rec.date > endDate) return;
+      if (startDate && rec.date < startDate) return;
+      if (endDate && rec.date > endDate) return;
 
       rec.items.forEach(item => {
-        // FIX: Ensure item.name exists before calling toLowerCase()
-        if (item.name && item.name.toLowerCase() === selectedItemName.toLowerCase()) {
+        if (item.name.toLowerCase() === selectedItemName.toLowerCase()) {
           matchedTransactions.push({
             date: rec.date,
             invoiceNum: rec.invoiceNum,
@@ -1905,93 +1899,56 @@ const app = {
     return { itemName: selectedItemName, matchedTransactions };
   },
 
-   renderItemHistory() {
-  const selectedItemName = document.getElementById("history-item-select").value;
-  const startDate = document.getElementById("item-history-start-date").value;
-  const endDate = document.getElementById("item-history-end-date").value;
-  const monthlyTableBody = document.getElementById("item-monthly-table");
-  const summaryDiv = document.getElementById("item-history-summary");
+  renderItemHistory() {
+    const { itemName: selectedItemName, matchedTransactions } = this.getFilteredItemHistory();
+    const monthlyTableBody = document.getElementById("item-monthly-table");
+    const summaryDiv = document.getElementById("item-history-summary");
 
-  if (!selectedItemName) {
-    summaryDiv.textContent = "Select an item and optional date range above to view its total distribution over time.";
-    monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No item selected</td></tr>`;
-    return;
-  }
-
-  // Properly filter and aggregate from checkoutHistory
-  let matchedTransactions = [];
-  let totalQuantitySent = 0;
-  const monthlyAggregates = {};
-
-  // Loop through ALL invoices in checkoutHistory
-  this.checkoutHistory.forEach(rec => {
-    // Skip voided invoices
-    if (rec.voided) return;
-    // Skip if no items array (safety check)
-    if (!rec.items || !Array.isArray(rec.items)) return;
-    // Date filtering
-    if (startDate && rec.date && rec.date < startDate) return;
-    if (endDate && rec.date && rec.date > endDate) return;
-
-    // Check each item in the invoice
-    rec.items.forEach(item => {
-      // FIX: Make sure we match the item name case-insensitively
-      if (item.name && item.name.toLowerCase() === selectedItemName.toLowerCase()) {
-        // Add to matched transactions
-        matchedTransactions.push({
-          date: rec.date,
-          invoiceNum: rec.invoiceNum,
-          department: rec.department,
-          category: item.category,
-          name: item.name,
-          qty: item.qty,
-          notes: rec.notes || '—'
-        });
-
-        // FIX: Aggregate by month/year
-        totalQuantitySent += item.qty;
-        const dateStr = rec.date || '';
-        // Extract YYYY-MM from date string
-        const monthKey = dateStr.length >= 7 ? dateStr.substring(0, 7) : 'Unknown';
-        
-        if (!monthlyAggregates[monthKey]) {
-          monthlyAggregates[monthKey] = {
-            month: monthKey,
-            category: item.category || '—',
-            qty: 0
-          };
-        }
-        monthlyAggregates[monthKey].qty += item.qty;
-      }
-    });
-  });
-
-  if (matchedTransactions.length === 0) {
-    summaryDiv.innerHTML = `No checkout records found for <strong>${selectedItemName}</strong> in the specified date range.`;
-    monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No monthly records for this period</td></tr>`;
-    return;
-  }
-
-  summaryDiv.innerHTML = `Total quantity sent out for <strong>${selectedItemName}</strong>: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
-
-  const sortedMonthly = Object.values(monthlyAggregates).sort((a, b) => b.month.localeCompare(a.month));
-  monthlyTableBody.innerHTML = sortedMonthly.map(m => {
-    let monthFormatted = m.month;
-    if (m.month !== 'Unknown' && m.month.includes('-')) {
-      const [year, monthNum] = m.month.split('-');
-      const dateObj = new Date(parseInt(year), parseInt(monthNum) - 1, 1);
-      monthFormatted = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+    if (!selectedItemName) {
+      summaryDiv.textContent = "Select an item and optional date range above to view its total distribution over time.";
+      monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No item selected</td></tr>`;
+      return;
     }
-    return `
-      <tr>
-        <td><strong>${monthFormatted}</strong></td>
-        <td>${selectedItemName}</td>
-        <td>${m.category}</td>
-        <td style="font-weight:700;">${m.qty}</td>
-      </tr>
-    `;
-  }).join('');
-}
+
+    if (matchedTransactions.length === 0) {
+      summaryDiv.innerHTML = `No checkout records found for <strong>${selectedItemName}</strong> in the specified date range.`;
+      monthlyTableBody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px;">No monthly records for this period</td></tr>`;
+      return;
+    }
+
+    let totalQuantitySent = 0;
+    const monthlyAggregates = {};
+
+    matchedTransactions.forEach(tx => {
+      totalQuantitySent += tx.qty;
+      const monthKey = tx.date.substring(0, 7);
+      if (!monthlyAggregates[monthKey]) {
+        monthlyAggregates[monthKey] = {
+          month: monthKey,
+          category: tx.category,
+          qty: 0
+        };
+      }
+      monthlyAggregates[monthKey].qty += tx.qty;
+    });
+
+    summaryDiv.innerHTML = `Total quantity sent out for <strong>${selectedItemName}</strong>: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
+
+    const sortedMonthly = Object.values(monthlyAggregates).sort((a, b) => b.month.localeCompare(a.month));
+    monthlyTableBody.innerHTML = sortedMonthly.map(m => {
+      const [year, monthNum] = m.month.split('-');
+      const dateObj = new Date(year, monthNum - 1, 1);
+      const monthFormatted = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+      return `
+        <tr>
+          <td><strong>${monthFormatted}</strong></td>
+          <td>${selectedItemName}</td>
+          <td>${m.category}</td>
+          <td style="font-weight:700;">${m.qty}</td>
+        </tr>
+      `;
+    }).join('');
+  },
 
   printItemHistory() {
     const { itemName: selectedItemName, matchedTransactions } = this.getFilteredItemHistory();

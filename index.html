@@ -401,8 +401,8 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
         <input type="text" class="form-control" id="modal-item-name" placeholder="e.g. Dry Erase Markers">
       </div>
       <div class="form-group">
-        <label>SKU *</label>
-        <input type="text" class="form-control" id="modal-item-sku" placeholder="e.g. STA-001" style="text-transform:uppercase;">
+        <label>SKU <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);">(optional)</span></label>
+        <input type="text" class="form-control" id="modal-item-sku" placeholder="e.g. STA-001 — leave blank if none" style="text-transform:uppercase;">
       </div>
       <div class="form-group">
         <label>Category *</label>
@@ -438,14 +438,14 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
     </div>
     <div class="card-body" style="overflow-y:auto;">
       <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;">
-        Enter as many SKUs as you need, one row each, then save them all at once. Empty rows are skipped automatically.
+        Enter as many items as you need, one row each, then save them all at once. SKU is optional — leave it blank for items that aren't reordered by code. Empty rows are skipped automatically.
       </p>
       <div style="overflow-x:auto;">
         <table id="bulk-add-table">
           <thead>
             <tr>
               <th style="width:26%;">Item Name</th>
-              <th style="width:16%;">SKU</th>
+              <th style="width:16%;">SKU <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);">(optional)</span></th>
               <th style="width:22%;">Category</th>
               <th style="width:12%;">Stock</th>
               <th style="width:16%;">Min Threshold</th>
@@ -608,7 +608,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
  * =====================================================================
  */
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyCr2KbOkhc5Pq8s_02q0bhgvu6l7Yf5sfA",
+  apiKey: ********,
   authDomain: "supply-room-6da91.firebaseapp.com",
   projectId: "supply-room-6da91",
   storageBucket: "supply-room-6da91.firebasestorage.app",
@@ -1284,15 +1284,20 @@ const app = {
     const stock = parseInt(document.getElementById("modal-item-stock").value, 10);
     const minThreshold = parseInt(document.getElementById("modal-item-min").value, 10);
 
-    if (!name || !sku || isNaN(stock) || isNaN(minThreshold) || stock < 0 || minThreshold < 0) {
-      this.showAlert("Please fill out all fields with valid values, including a SKU.", { title: "Missing Information" });
+    if (!name || isNaN(stock) || isNaN(minThreshold) || stock < 0 || minThreshold < 0) {
+      this.showAlert("Please fill out the item name, stock, and minimum threshold with valid values.", { title: "Missing Information" });
       return;
     }
 
-    const dupSku = this.catalog.find(i => i.id !== id && (i.sku || '').toUpperCase() === sku);
-    if (dupSku) {
-      this.showAlert(`SKU "${sku}" is already used by "${dupSku.name}". SKUs must be unique — choose a different code.`, { title: "Duplicate SKU" });
-      return;
+    // SKU is optional — only enforce uniqueness when one is actually
+    // entered. Two items with no SKU are perfectly fine (e.g. a box of
+    // pencils that never gets reordered by code).
+    if (sku) {
+      const dupSku = this.catalog.find(i => i.id !== id && (i.sku || '').toUpperCase() === sku);
+      if (dupSku) {
+        this.showAlert(`SKU "${sku}" is already used by "${dupSku.name}". SKUs must be unique — choose a different code.`, { title: "Duplicate SKU" });
+        return;
+      }
     }
 
     const nameMatch = this.findDuplicateMatch(name, id);
@@ -1383,11 +1388,7 @@ const app = {
         inputs[0].focus();
         return;
       }
-      if (!sku) {
-        this.showAlert(`"${name}" needs a SKU. Fill it in or remove the row.`, { title: "Missing SKU" });
-        inputs[1].focus();
-        return;
-      }
+      // SKU is optional — a row with a name but no SKU is allowed.
 
       // Exact match (case/punctuation/whitespace ignored) — hard stop,
       // checked against both the live catalog and everything already
@@ -1399,7 +1400,7 @@ const app = {
         return;
       }
 
-      if (seenSkus.has(sku)) {
+      if (sku && seenSkus.has(sku)) {
         this.showAlert(`SKU "${sku}" is already in use (in your inventory or earlier in this list). SKUs must be unique.`, { title: "Duplicate SKU" });
         inputs[1].focus();
         return;
@@ -1421,7 +1422,7 @@ const app = {
 
       toAdd.push({ name, sku, category: category || "General", stock, minThreshold });
       seenNamesInBatch.push(name);
-      seenSkus.add(sku);
+      if (sku) seenSkus.add(sku);
     }
 
     if (toAdd.length === 0) {

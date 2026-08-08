@@ -172,7 +172,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
       <div class="card">
         <div class="card-header">
           <h2>Select Supplies</h2>
-          <input type="text" class="form-control" id="search-box" placeholder="Filter items..." oninput="app.renderItems()" style="width:180px;padding:6px 10px;">
+          <input type="text" class="form-control" id="search-box" placeholder="Filter by name, SKU, category..." oninput="app.renderItems()" style="width:200px;padding:6px 10px;">
         </div>
         <div class="card-body">
           <div class="item-list" id="item-list"></div>
@@ -183,7 +183,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
       <div class="card">
         <div class="card-header">
           <h2>📦 Stock Levels & Alerts</h2>
-          <input type="text" class="form-control" id="inventory-search-box" placeholder="Filter stock..." oninput="app.renderInventoryManager()" style="width:160px;padding:6px 10px;">
+          <input type="text" class="form-control" id="inventory-search-box" placeholder="Filter by name, SKU, category..." oninput="app.renderInventoryManager()" style="width:200px;padding:6px 10px;">
         </div>
         <div class="card-body" style="padding:0;">
           <div style="max-height:260px;overflow-y:auto;" id="inventory-manage-list"></div>
@@ -316,7 +316,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
     <div class="card-header">
       <h2>📦 Monthly Aggregated Item Volume</h2>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-        <select class="form-control" id="history-item-select" onchange="app.renderItemHistory()" style="width:200px;padding:6px 10px;">
+        <select class="form-control" id="history-item-select" onchange="app.renderItemHistory()" style="width:220px;padding:6px 10px;">
           <option value="">— Select Item —</option>
         </select>
         <input type="date" class="form-control" id="item-history-start-date" onchange="app.renderItemHistory()" style="width:140px;padding:6px 10px;" title="Start Date">
@@ -401,6 +401,10 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
         <input type="text" class="form-control" id="modal-item-name" placeholder="e.g. Dry Erase Markers">
       </div>
       <div class="form-group">
+        <label>SKU *</label>
+        <input type="text" class="form-control" id="modal-item-sku" placeholder="e.g. STA-001" style="text-transform:uppercase;">
+      </div>
+      <div class="form-group">
         <label>Category *</label>
         <input type="text" class="form-control" id="modal-item-cat" placeholder="e.g. Stationery" list="cat-list">
       </div>
@@ -427,7 +431,7 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
 
 <!-- Modal: Bulk Add Items -->
 <div id="bulkAddModal" class="hidden" style="position:fixed;inset:0;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;">
-  <div class="card" style="width:100%;max-width:760px;margin:0;max-height:90vh;display:flex;flex-direction:column;">
+  <div class="card" style="width:100%;max-width:840px;margin:0;max-height:90vh;display:flex;flex-direction:column;">
     <div class="card-header">
       <h2>+ Add New Items</h2>
       <button class="btn btn-secondary btn-sm" onclick="app.closeBulkAddModal()">&times;</button>
@@ -440,10 +444,11 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
         <table id="bulk-add-table">
           <thead>
             <tr>
-              <th style="width:34%;">Item Name</th>
-              <th style="width:24%;">Category</th>
-              <th style="width:16%;">Stock</th>
-              <th style="width:18%;">Min Threshold</th>
+              <th style="width:26%;">Item Name</th>
+              <th style="width:16%;">SKU</th>
+              <th style="width:22%;">Category</th>
+              <th style="width:12%;">Stock</th>
+              <th style="width:16%;">Min Threshold</th>
               <th style="width:8%;"></th>
             </tr>
           </thead>
@@ -584,8 +589,17 @@ th{background:var(--bg);color:var(--text-secondary);text-transform:uppercase;fon
  *        match /invoices/{invoiceId} {
  *          allow read, write: if request.auth != null;
  *        }
+ *        match /counters/{counterId} {
+ *          allow read, write: if request.auth != null;
+ *        }
  *      }
  *    }
+ *
+ *    NOTE: the /counters collection is new — it holds the running
+ *    invoice-number sequence. If this app was already deployed on an
+ *    existing Firebase project, you must add this /counters rule
+ *    yourself in the Firebase Console; checkout will otherwise fail
+ *    with a "Missing or insufficient permissions" error.
  *
  * 7. (Optional, at scale) On the Spark (free) plan, Firestore gives you
  *    50,000 reads / 20,000 writes / 20,000 deletes per day at no cost.
@@ -603,6 +617,10 @@ const FIREBASE_CONFIG = {
 };
 
 const INVOICE_SYNC_LIMIT = 5000;
+// Below this similarity score (0-1), two item names are treated as
+// unrelated. At or above it, they're flagged as a possible duplicate
+// but not blocked outright — see findDuplicateMatch().
+const FUZZY_MATCH_THRESHOLD = 0.72;
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
@@ -684,6 +702,84 @@ const app = {
       this._confirmResolve = null;
       resolve(result);
     }
+  },
+
+  // ===================================================================
+  // Duplicate-name detection
+  // Two layers: an exact check that ignores case/punctuation/whitespace
+  // (so "Hemingsen-Jaeger", "hemingsen-jaeger", and "hemingsen jaeger"
+  // are all the same item and blocked outright), and a fuzzy check
+  // using edit distance that catches close variants like "AA Batteries"
+  // vs "AA Battery" without being certain enough to block — those are
+  // flagged with a confirmation instead.
+  // ===================================================================
+  normalizeForDupeCheck(s) {
+    return (s || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[-_]+/g, ' ')
+      .replace(/[^a-z0-9\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  },
+
+  levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp = [];
+    for (let i = 0; i <= m; i++) {
+      dp.push(new Array(n + 1).fill(0));
+      dp[i][0] = i;
+    }
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + cost
+        );
+      }
+    }
+    return dp[m][n];
+  },
+
+  nameSimilarity(a, b) {
+    const na = this.normalizeForDupeCheck(a);
+    const nb = this.normalizeForDupeCheck(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 1;
+    const dist = this.levenshtein(na, nb);
+    const maxLen = Math.max(na.length, nb.length);
+    return maxLen === 0 ? 1 : 1 - (dist / maxLen);
+  },
+
+  // Checks `name` against the live catalog (minus `excludeId`, for when
+  // editing an existing item) plus any extra names already queued in
+  // an in-progress bulk-add batch. Returns { type: 'exact', label } for
+  // a normalized exact match, { type: 'fuzzy', label } for a close-but-
+  // not-exact match, or null if nothing looks related.
+  findDuplicateMatch(name, excludeId, extraNames = []) {
+    const candidates = this.catalog
+      .filter(i => i.id !== excludeId)
+      .map(i => i.name)
+      .concat(extraNames);
+
+    for (const label of candidates) {
+      if (this.normalizeForDupeCheck(label) === this.normalizeForDupeCheck(name)) {
+        return { type: 'exact', label };
+      }
+    }
+    let best = null;
+    for (const label of candidates) {
+      const sim = this.nameSimilarity(name, label);
+      if (sim >= FUZZY_MATCH_THRESHOLD && (!best || sim > best.similarity)) {
+        best = { type: 'fuzzy', label, similarity: sim };
+      }
+    }
+    return best;
   },
 
   async init() {
@@ -899,12 +995,12 @@ const app = {
 
   async seedDefaultCatalog() {
     const defaults = [
-      { name: "Blue Ballpoint Pens (Box)", category: "Stationery", stock: 15, minThreshold: 5 },
-      { name: "Legal Pads (8.5x11)", category: "Stationery", stock: 2, minThreshold: 4 },
-      { name: "Nitrile Gloves (Box of 100)", category: "Safety", stock: 8, minThreshold: 5 },
-      { name: "Disinfectant Wipes", category: "Cleaning", stock: 1, minThreshold: 3 },
-      { name: "AA Batteries (Pack of 4)", category: "Electronics", stock: 12, minThreshold: 4 },
-      { name: "Permanent Markers (Black)", category: "Stationery", stock: 4, minThreshold: 5 }
+      { name: "Blue Ballpoint Pens (Box)", sku: "STA-001", category: "Stationery", stock: 15, minThreshold: 5 },
+      { name: "Legal Pads (8.5x11)", sku: "STA-002", category: "Stationery", stock: 2, minThreshold: 4 },
+      { name: "Nitrile Gloves (Box of 100)", sku: "SAF-001", category: "Safety", stock: 8, minThreshold: 5 },
+      { name: "Disinfectant Wipes", sku: "CLN-001", category: "Cleaning", stock: 1, minThreshold: 3 },
+      { name: "AA Batteries (Pack of 4)", sku: "ELC-001", category: "Electronics", stock: 12, minThreshold: 4 },
+      { name: "Permanent Markers (Black)", sku: "STA-003", category: "Stationery", stock: 4, minThreshold: 5 }
     ];
     const batch = writeBatch(this.db);
     defaults.forEach(item => {
@@ -1029,7 +1125,9 @@ const app = {
     const container = document.getElementById("item-list");
 
     const filtered = this.catalog.filter(i =>
-      i.name.toLowerCase().includes(query) || i.category.toLowerCase().includes(query)
+      i.name.toLowerCase().includes(query) ||
+      i.category.toLowerCase().includes(query) ||
+      (i.sku || '').toLowerCase().includes(query)
     );
 
     if (filtered.length === 0) {
@@ -1045,7 +1143,7 @@ const app = {
         <div class="item-row selectable ${isSelected ? 'selected' : ''}" onclick="app.toggleItem('${item.id}')">
           <div class="item-info">
             <h4>${item.name}</h4>
-            <p>${item.category} &bull; Stock: <strong style="color:${isLow ? 'var(--danger)' : 'inherit'}">${item.stock}</strong></p>
+            <p><code>${item.sku || '—'}</code> &bull; ${item.category} &bull; Stock: <strong style="color:${isLow ? 'var(--danger)' : 'inherit'}">${item.stock}</strong></p>
           </div>
           <div>
             ${isSelected ? `<span class="qty-badge">${qty} selected</span>` : `<button class="btn btn-secondary btn-sm">+ Add</button>`}
@@ -1060,7 +1158,9 @@ const app = {
     const container = document.getElementById("inventory-manage-list");
 
     const filtered = this.catalog.filter(i =>
-      i.name.toLowerCase().includes(query) || i.category.toLowerCase().includes(query)
+      i.name.toLowerCase().includes(query) ||
+      i.category.toLowerCase().includes(query) ||
+      (i.sku || '').toLowerCase().includes(query)
     );
 
     if (filtered.length === 0) {
@@ -1074,7 +1174,7 @@ const app = {
         <div class="item-row" style="border:none;border-bottom:1px solid var(--border);border-radius:0;">
           <div class="item-info">
             <h4>${item.name}</h4>
-            <p>${item.category}</p>
+            <p><code>${item.sku || '—'}</code> &bull; ${item.category}</p>
             <span class="stock-badge ${isLow ? 'stock-low' : 'stock-normal'}">
               ${isLow ? '⚠️ ORDER NEEDED — ' : ''}Stock: ${item.stock} (Min: ${item.minThreshold})
             </span>
@@ -1162,6 +1262,7 @@ const app = {
 
     document.getElementById("edit-item-id").value = id;
     document.getElementById("modal-item-name").value = item.name;
+    document.getElementById("modal-item-sku").value = item.sku || '';
     document.getElementById("modal-item-cat").value = item.category;
     document.getElementById("modal-item-stock").value = item.stock;
     document.getElementById("modal-item-min").value = item.minThreshold;
@@ -1178,23 +1279,37 @@ const app = {
   async saveItemModal() {
     const id = document.getElementById("edit-item-id").value;
     const name = document.getElementById("modal-item-name").value.trim();
+    const sku = document.getElementById("modal-item-sku").value.trim().toUpperCase();
     const category = document.getElementById("modal-item-cat").value.trim() || "General";
     const stock = parseInt(document.getElementById("modal-item-stock").value, 10);
     const minThreshold = parseInt(document.getElementById("modal-item-min").value, 10);
 
-    if (!name || isNaN(stock) || isNaN(minThreshold) || stock < 0 || minThreshold < 0) {
-      this.showAlert("Please fill out all fields with valid values.", { title: "Missing Information" });
+    if (!name || !sku || isNaN(stock) || isNaN(minThreshold) || stock < 0 || minThreshold < 0) {
+      this.showAlert("Please fill out all fields with valid values, including a SKU.", { title: "Missing Information" });
       return;
     }
 
-    const duplicate = this.catalog.find(i => i.id !== id && i.name.toLowerCase() === name.toLowerCase());
-    if (duplicate) {
-      this.showAlert(`An item named "${duplicate.name}" already exists. Please use a different name, or edit that item instead.`, { title: "Duplicate Item" });
+    const dupSku = this.catalog.find(i => i.id !== id && (i.sku || '').toUpperCase() === sku);
+    if (dupSku) {
+      this.showAlert(`SKU "${sku}" is already used by "${dupSku.name}". SKUs must be unique — choose a different code.`, { title: "Duplicate SKU" });
       return;
+    }
+
+    const nameMatch = this.findDuplicateMatch(name, id);
+    if (nameMatch && nameMatch.type === 'exact') {
+      this.showAlert(`An item named "${nameMatch.label}" already exists (capitalization and punctuation don't count as different). Please use a different name, or edit that item instead.`, { title: "Duplicate Item" });
+      return;
+    }
+    if (nameMatch && nameMatch.type === 'fuzzy') {
+      const proceed = await this.showConfirm(
+        `"${name}" looks very similar to the existing item "${nameMatch.label}". Save it as a separate item anyway?`,
+        { title: "Possible Duplicate", confirmText: "Save Anyway", danger: false }
+      );
+      if (!proceed) return;
     }
 
     try {
-      await updateDoc(doc(this.db, "catalog", id), { name, category, stock, minThreshold });
+      await updateDoc(doc(this.db, "catalog", id), { name, sku, category, stock, minThreshold });
       this.closeItemModal();
     } catch (err) {
       this.showAlert(`Could not save changes: ${err.message}`, { title: "Error" });
@@ -1205,6 +1320,7 @@ const app = {
     return `
       <tr>
         <td><input type="text" class="form-control bulk-input" placeholder="e.g. Dry Erase Markers"></td>
+        <td><input type="text" class="form-control bulk-input" placeholder="e.g. STA-004" style="text-transform:uppercase;"></td>
         <td><input type="text" class="form-control bulk-input" placeholder="e.g. Stationery" list="cat-list"></td>
         <td><input type="number" class="form-control bulk-input" min="0" value="10"></td>
         <td><input type="number" class="form-control bulk-input" min="0" value="3"></td>
@@ -1246,17 +1362,20 @@ const app = {
 
   async saveBulkItems() {
     const rows = document.querySelectorAll('#bulk-add-rows tr');
-    const seenNames = new Set(this.catalog.map(i => i.name.toLowerCase()));
+    const seenSkus = new Set(this.catalog.map(i => (i.sku || '').toUpperCase()).filter(Boolean));
+    const seenNamesInBatch = [];
     const toAdd = [];
+    const fuzzyWarnings = [];
 
     for (const row of rows) {
       const inputs = row.querySelectorAll('input');
       const name = inputs[0].value.trim();
-      const category = inputs[1].value.trim();
-      const stockRaw = inputs[2].value;
-      const minRaw = inputs[3].value;
+      const sku = inputs[1].value.trim().toUpperCase();
+      const category = inputs[2].value.trim();
+      const stockRaw = inputs[3].value;
+      const minRaw = inputs[4].value;
 
-      const isBlankRow = !name && !category && stockRaw === '' && minRaw === '';
+      const isBlankRow = !name && !sku && !category && stockRaw === '' && minRaw === '';
       if (isBlankRow) continue;
 
       if (!name) {
@@ -1264,12 +1383,33 @@ const app = {
         inputs[0].focus();
         return;
       }
+      if (!sku) {
+        this.showAlert(`"${name}" needs a SKU. Fill it in or remove the row.`, { title: "Missing SKU" });
+        inputs[1].focus();
+        return;
+      }
 
-      const nameLower = name.toLowerCase();
-      if (seenNames.has(nameLower)) {
-        this.showAlert(`"${name}" already exists in your inventory (or appears twice in this list). Duplicate items aren't allowed — edit the existing item instead, or use a different name.`, { title: "Duplicate Item" });
+      // Exact match (case/punctuation/whitespace ignored) — hard stop,
+      // checked against both the live catalog and everything already
+      // queued earlier in this same batch.
+      const nameMatch = this.findDuplicateMatch(name, null, seenNamesInBatch);
+      if (nameMatch && nameMatch.type === 'exact') {
+        this.showAlert(`"${name}" matches "${nameMatch.label}" once capitalization and punctuation are ignored. Duplicate items aren't allowed — edit the existing item instead, or use a clearly different name.`, { title: "Duplicate Item" });
         inputs[0].focus();
         return;
+      }
+
+      if (seenSkus.has(sku)) {
+        this.showAlert(`SKU "${sku}" is already in use (in your inventory or earlier in this list). SKUs must be unique.`, { title: "Duplicate SKU" });
+        inputs[1].focus();
+        return;
+      }
+
+      // Fuzzy near-duplicate — flagged, not blocked, since it can be a
+      // false positive (e.g. two genuinely different items that just
+      // happen to share most of their name).
+      if (nameMatch && nameMatch.type === 'fuzzy') {
+        fuzzyWarnings.push(`"${name}" looks similar to "${nameMatch.label}"`);
       }
 
       const stock = parseInt(stockRaw, 10);
@@ -1279,13 +1419,22 @@ const app = {
         return;
       }
 
-      toAdd.push({ name, category: category || "General", stock, minThreshold });
-      seenNames.add(nameLower);
+      toAdd.push({ name, sku, category: category || "General", stock, minThreshold });
+      seenNamesInBatch.push(name);
+      seenSkus.add(sku);
     }
 
     if (toAdd.length === 0) {
       this.showAlert("Add at least one item before saving.", { title: "Nothing to Add" });
       return;
+    }
+
+    if (fuzzyWarnings.length > 0) {
+      const proceed = await this.showConfirm(
+        `Possible duplicates found:\n\n${fuzzyWarnings.join('\n')}\n\nSave everything anyway?`,
+        { title: "Possible Duplicates", confirmText: "Save Anyway", danger: false }
+      );
+      if (!proceed) return;
     }
 
     const saveBtn = document.getElementById("bulk-save-btn");
@@ -1364,10 +1513,11 @@ const app = {
 
     const date = document.getElementById("checkout-date").value;
     const notes = document.getElementById("notes").value.trim();
-    const invoiceNum = 'INV-' + Math.floor(100000 + Math.random() * 900000);
     const invoiceRef = doc(collection(this.db, "invoices"));
+    const counterRef = doc(this.db, "counters", "invoices");
 
     let itemsTaken = [];
+    let invoiceNum = '';
     const checkoutBtn = document.getElementById("checkout-btn");
     checkoutBtn.disabled = true;
 
@@ -1379,6 +1529,14 @@ const app = {
         for (const ref of catalogRefs) {
           catalogSnaps.push(await transaction.get(ref));
         }
+        // Sequential invoice numbering, guaranteed collision-free: the
+        // running counter is read and incremented inside this same
+        // transaction. Firestore transactions are serializable — if two
+        // checkouts race for the counter at the same instant, Firestore
+        // forces one to automatically retry rather than letting both
+        // grab the same number, so two invoices can never end up
+        // sharing a number.
+        const counterSnap = await transaction.get(counterRef);
 
         itemsTaken = [];
         for (let i = 0; i < cartEntries.length; i++) {
@@ -1391,13 +1549,17 @@ const app = {
           if (data.stock < qty) {
             throw new Error(`Not enough stock for "${data.name}" — only ${data.stock} left. Please refresh and adjust your cart.`);
           }
-          itemsTaken.push({ id, name: data.name, category: data.category, qty });
+          itemsTaken.push({ id, sku: data.sku || '', name: data.name, category: data.category, qty });
         }
 
         for (let i = 0; i < cartEntries.length; i++) {
           const [, qty] = cartEntries[i];
           transaction.update(catalogRefs[i], { stock: catalogSnaps[i].data().stock - qty });
         }
+
+        const nextNum = counterSnap.exists() ? (counterSnap.data().lastNumber || 0) + 1 : 1;
+        invoiceNum = 'INV-' + String(nextNum).padStart(6, '0');
+        transaction.set(counterRef, { lastNumber: nextNum }, { merge: true });
 
         transaction.set(invoiceRef, {
           invoiceNum, department, notes, date,
@@ -1424,6 +1586,7 @@ const app = {
 
     const thead = document.querySelector("#invoice-screen thead tr");
     thead.innerHTML = `
+      <th>SKU</th>
       <th>Item Description</th>
       <th>Category</th>
       <th style="text-align:right;">Quantity Taken</th>
@@ -1432,6 +1595,7 @@ const app = {
     const tbody = document.getElementById("inv-table-body");
     tbody.innerHTML = itemsTaken.map(i => `
       <tr>
+        <td><code>${i.sku || '—'}</code></td>
         <td><strong>${i.name}</strong></td>
         <td>${i.category}</td>
         <td style="text-align:right;font-weight:700;">${i.qty}</td>
@@ -1452,11 +1616,12 @@ const app = {
     let htmlRows = '';
 
     sortedCats.forEach(cat => {
-      htmlRows += `<tr><td colspan="3" style="background:var(--bg);font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;padding:8px 14px;">${cat}</td></tr>`;
+      htmlRows += `<tr><td colspan="4" style="background:var(--bg);font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;padding:8px 14px;">${cat}</td></tr>`;
       categories[cat].sort((a,b) => a.name.localeCompare(b.name)).forEach(item => {
         const isLow = item.stock <= item.minThreshold;
         htmlRows += `
           <tr>
+            <td><code>${item.sku || '—'}</code></td>
             <td>${item.name}</td>
             <td style="text-align:right;font-weight:700;color:${isLow ? 'var(--danger)' : 'inherit'}">${item.stock}</td>
             <td style="text-align:right;color:var(--text-secondary);">${item.minThreshold}</td>
@@ -1467,6 +1632,7 @@ const app = {
 
     const thead = document.querySelector("#invoice-screen thead tr");
     thead.innerHTML = `
+      <th>SKU</th>
       <th>Item Name</th>
       <th style="text-align:right;">Stock on Hand</th>
       <th style="text-align:right;">Min Threshold</th>
@@ -1501,10 +1667,11 @@ const app = {
     let htmlRows = '';
 
     sortedCats.forEach(cat => {
-      htmlRows += `<tr><td colspan="3" style="background:var(--bg);font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;padding:8px 14px;">${cat}</td></tr>`;
+      htmlRows += `<tr><td colspan="4" style="background:var(--bg);font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;padding:8px 14px;">${cat}</td></tr>`;
       categories[cat].sort((a,b) => a.name.localeCompare(b.name)).forEach(item => {
         htmlRows += `
           <tr>
+            <td><code>${item.sku || '—'}</code></td>
             <td>${item.name}</td>
             <td style="text-align:right;font-weight:700;color:var(--danger);">${item.stock}</td>
             <td style="text-align:right;color:var(--text-secondary);">${item.minThreshold}</td>
@@ -1515,6 +1682,7 @@ const app = {
 
     const thead = document.querySelector("#invoice-screen thead tr");
     thead.innerHTML = `
+      <th>SKU</th>
       <th>Item Name</th>
       <th style="text-align:right;">Stock on Hand</th>
       <th style="text-align:right;">Min Threshold</th>
@@ -1641,7 +1809,7 @@ const app = {
 
     const select = document.getElementById("edit-inv-add-item");
     select.innerHTML = `<option value="">-- Select Item to Add --</option>` +
-      this.catalog.map(i => `<option value="${i.id}">${i.name} (Stock: ${i.stock})</option>`).join('');
+      this.catalog.map(i => `<option value="${i.id}">${i.sku ? i.sku + ' — ' : ''}${i.name} (Stock: ${i.stock})</option>`).join('');
 
     document.getElementById("editInvoiceModal").classList.remove("hidden");
   },
@@ -1663,7 +1831,7 @@ const app = {
         <div class="edit-item-row" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding:8px;background:var(--bg);border-radius:var(--radius-sm);">
           <div>
             <div style="font-weight:600;font-size:13px;">${item.name}</div>
-            <div style="font-size:11px;color:var(--text-secondary);">${item.category} &bull; DB Stock: ${stockAvail}</div>
+            <div style="font-size:11px;color:var(--text-secondary);">${item.sku ? item.sku + ' &bull; ' : ''}${item.category} &bull; DB Stock: ${stockAvail}</div>
           </div>
           <div style="display:flex;align-items:center;gap:6px;">
             <button class="btn btn-secondary btn-sm" onclick="app.editInvUpdateQty(${idx}, -1)">-</button>
@@ -1717,6 +1885,7 @@ const app = {
       if (catItem) {
         this.editInvItems.push({
           id: catItem.id,
+          sku: catItem.sku || '',
           name: catItem.name,
           category: catItem.category,
           qty: 1
@@ -1834,6 +2003,7 @@ const app = {
 
     const thead = document.querySelector("#invoice-screen thead tr");
     thead.innerHTML = `
+      <th>SKU</th>
       <th>Item Description</th>
       <th>Category</th>
       <th style="text-align:right;">Quantity Taken</th>
@@ -1842,6 +2012,7 @@ const app = {
     const tbody = document.getElementById("inv-table-body");
     tbody.innerHTML = rec.items.map(i => `
       <tr>
+        <td><code>${i.sku || '—'}</code></td>
         <td><strong>${i.name}</strong></td>
         <td>${i.category}</td>
         <td style="text-align:right;font-weight:700;">${i.qty}</td>
@@ -1932,20 +2103,20 @@ const app = {
     // item disappear from the list entirely if it's later deleted from
     // the catalog — the id survives in history even though the name
     // conflict does not.
-    const itemMap = new Map(); // key: item id -> { id, name, category }
+    const itemMap = new Map(); // key: item id -> { id, name, sku, category }
 
     this.catalog.forEach(item => {
-      itemMap.set(item.id, { id: item.id, name: item.name, category: item.category });
+      itemMap.set(item.id, { id: item.id, name: item.name, sku: item.sku || '', category: item.category });
     });
 
     // checkoutHistory is ordered most-recent-first (see listenToInvoices),
     // so the first time we encounter a given id here is its most recently
-    // recorded name — a reasonable label to fall back to for an item
+    // recorded name/SKU — a reasonable label to fall back to for an item
     // that's since been deleted from the catalog.
     this.checkoutHistory.forEach(rec => {
       (rec.items || []).forEach(i => {
         if (!itemMap.has(i.id)) {
-          itemMap.set(i.id, { id: i.id, name: i.name, category: i.category });
+          itemMap.set(i.id, { id: i.id, name: i.name, sku: i.sku || '', category: i.category });
         }
       });
     });
@@ -1959,7 +2130,7 @@ const app = {
     const allItems = this.getAllKnownItems();
 
     select.innerHTML = `<option value="">— Select Item —</option>` + allItems.map(item => `
-      <option value="${item.id}" ${item.id === currentVal ? 'selected' : ''}>${item.name} (${item.category})</option>
+      <option value="${item.id}" ${item.id === currentVal ? 'selected' : ''}>${item.sku ? item.sku + ' — ' : ''}${item.name} (${item.category})</option>
     `).join('');
   },
 
@@ -2084,13 +2255,14 @@ const app = {
     const startDate = document.getElementById("item-history-start-date").value;
     const endDate = document.getElementById("item-history-end-date").value;
 
-    if (!selectedItemId) return { itemId: '', displayName: '', matchedTransactions: [] };
+    if (!selectedItemId) return { itemId: '', displayName: '', displaySku: '', matchedTransactions: [] };
 
     // Used only for report headings — every row below still shows the
     // exact name recorded on that specific invoice at the time, so the
     // history stays accurate even across renames.
     const knownItem = this.getAllKnownItems().find(i => i.id === selectedItemId);
     const displayName = knownItem ? knownItem.name : 'Unknown Item';
+    const displaySku = knownItem ? knownItem.sku : '';
 
     let matchedTransactions = [];
 
@@ -2114,11 +2286,11 @@ const app = {
       });
     });
 
-    return { itemId: selectedItemId, displayName, matchedTransactions };
+    return { itemId: selectedItemId, displayName, displaySku, matchedTransactions };
   },
 
   renderItemHistory() {
-    const { itemId: selectedItemId, displayName, matchedTransactions } = this.getFilteredItemHistory();
+    const { itemId: selectedItemId, displayName, displaySku, matchedTransactions } = this.getFilteredItemHistory();
     const monthlyTableBody = document.getElementById("item-monthly-table");
     const summaryDiv = document.getElementById("item-history-summary");
 
@@ -2151,7 +2323,7 @@ const app = {
       monthlyAggregates[monthKey].qty += tx.qty;
     });
 
-    summaryDiv.innerHTML = `Total quantity sent out for <strong>${displayName}</strong>: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
+    summaryDiv.innerHTML = `Total quantity sent out for <strong>${displayName}</strong>${displaySku ? ` <code>${displaySku}</code>` : ''}: <strong style="color:var(--primary);">${totalQuantitySent} units total</strong> across ${matchedTransactions.length} checkout transactions.`;
 
     const sortedMonthly = Object.values(monthlyAggregates).sort((a, b) => b.month.localeCompare(a.month));
     monthlyTableBody.innerHTML = sortedMonthly.map(m => {
@@ -2170,7 +2342,7 @@ const app = {
   },
 
   printItemHistory() {
-    const { itemId: selectedItemId, displayName, matchedTransactions } = this.getFilteredItemHistory();
+    const { itemId: selectedItemId, displayName, displaySku, matchedTransactions } = this.getFilteredItemHistory();
     if (!selectedItemId || matchedTransactions.length === 0) {
       this.showAlert("Please select a valid item and ensure there are records to print within the chosen date range.", { title: "Nothing to Print" });
       return;
@@ -2193,7 +2365,7 @@ const app = {
     this.setInvoiceDocTitle("ITEM DISTRIBUTION REPORT", "Item Issue History");
     document.getElementById("inv-reprint-tag").classList.add("hidden");
     document.getElementById("inv-meta-text").innerHTML = `<strong>Report Type:</strong> Item Distribution Log<br><strong>Range:</strong> ${startDate} to ${endDate}`;
-    document.getElementById("inv-department").textContent = `Item: ${displayName}`;
+    document.getElementById("inv-department").textContent = `Item: ${displayName}${displaySku ? ' (' + displaySku + ')' : ''}`;
     document.getElementById("inv-subline").textContent = `Total Units Sent Out: ${totalQuantitySent}`;
 
     const tbody = document.getElementById("inv-table-body");

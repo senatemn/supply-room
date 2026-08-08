@@ -649,6 +649,14 @@ const app = {
   // Auto-logout after 10 minutes of no mouse/keyboard/touch activity.
   INACTIVITY_LIMIT_MS: 10 * 60 * 1000,
   inactivityTimer: null,
+  // Explicit sign-in state that the app itself controls. The idle timer is
+  // keyed off THIS, not Firebase's auth.currentUser. During page load
+  // Firebase restores a persisted session asynchronously, so currentUser can
+  // briefly be populated while the login screen is still the visible surface
+  // — using it as the guard let the 10-minute timer get scheduled before the
+  // user had actually entered the app. isLoggedIn only flips true once we've
+  // committed to showing the app, and flips false the instant we leave it.
+  isLoggedIn: false,
   // Whether the activity listeners below are currently attached. They
   // are only ever bound while someone is signed in (see
   // startActivityTracking/stopActivityTracking), which makes it
@@ -809,9 +817,13 @@ const app = {
         if (user) {
           document.getElementById("login-screen").classList.add("hidden");
           await this.enterApp();
+          // Mark the session live only after the app is actually on screen,
+          // then arm the idle timer.
+          this.isLoggedIn = true;
           this.startActivityTracking();
           this.resetInactivityTimer();
         } else {
+          this.isLoggedIn = false;
           this.teardownListeners();
           this.stopActivityTracking();
           this.clearInactivityTimer();
@@ -881,6 +893,7 @@ const app = {
     // that shows up as a scary "Lost connection" notice right as you
     // log out — and a stale activity listener has no business existing
     // once nobody's signed in.
+    this.isLoggedIn = false;
     this.teardownListeners();
     this.stopActivityTracking();
     this.clearInactivityTimer();
@@ -919,11 +932,12 @@ const app = {
   },
 
   resetInactivityTimer() {
-    // Belt-and-suspenders: this should only ever be called while signed
-    // in anyway (see startActivityTracking), but keep the guard so
-    // there's no path to scheduling a logout for a session that isn't
-    // there.
-    if (!this.auth || !this.auth.currentUser) return;
+    // The timer is only ever scheduled for a session the app itself has
+    // committed to (isLoggedIn), never merely because Firebase has a
+    // restored token in hand. If the login screen is showing for any
+    // reason, there is nothing to time out.
+    if (!this.isLoggedIn) return;
+    if (!document.getElementById("login-screen").classList.contains("hidden")) return;
     this.clearInactivityTimer();
     this.inactivityTimer = setTimeout(() => this.autoLogout(), this.INACTIVITY_LIMIT_MS);
   },
@@ -959,7 +973,11 @@ const app = {
   },
 
   autoLogout() {
-    if (!this.auth || !this.auth.currentUser) return;
+    // Never fire — and never show the "Session Expired" notice — unless a
+    // real, app-level session is currently active. This is the guarantee
+    // that sitting on the login page can never trigger a logout.
+    if (!this.isLoggedIn) return;
+    this.isLoggedIn = false;
     // Same cleanup as a manual logout, but no confirmation prompt — the
     // whole point is that nobody is at the keyboard to answer it.
     this.teardownListeners();
